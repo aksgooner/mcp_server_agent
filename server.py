@@ -4,39 +4,12 @@ import yfinance as yf
 from colorama import Fore
 # Bring in MCP Server SDK
 from mcp.server.fastmcp import FastMCP
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 # Create server 
 mcp = FastMCP("yfinanceserver")
 
-# Add in a prompt function
-@mcp.prompt()
-def stock_summary(stock_data:str) -> str:
-    """Prompt template for summarising stock price"""
-    return f"""You are a helpful financial assistant designed to summarise stock data.
-                Using the information below, summarise the pertintent points relevant to stock price movement
-                Data {stock_data}"""
-                
-# Add in a resource function
-import chromadb
-chroma_client = chromadb.PersistentClient(path="ticker_db")
-collection = chroma_client.get_collection(name="stock_tickers")
-@mcp.resource("tickers://search/{stock_name}")
-def list_tickers(stock_name:str)->str: 
-    """This resource allows you to find a stock ticker by passing through a stock name e.g. Google, Bank of America etc. 
-        It returns the result from a vector search using a similarity metric. 
-    Args:
-        stock_name: Name of the stock you want to find the ticker for
-        Example payload: "Protor and Gamble"
-
-    Returns:
-        str:"Ticker: Last Price" 
-        Example Respnse 
-        {'ids': [['41', '30']], 'embeddings': None, 'documents': [['AZN - ASTRAZENECA PLC', 'NVO - NOVO NORDISK A S']], 'uris': None, 'included': ['metadatas', 'documents', 'distances'], 'data': None, 'metadatas': [[None, None]], 'distances': [[1.1703131198883057, 1.263759970664978]]}
-        
-    """
-    results = collection.query(query_texts=[stock_name], n_results=1) 
-    return str(results) 
-    
-# Build server function
+# # Build server function
 @mcp.tool()
 def stock_price(stock_ticker: str) -> str:
     """This tool returns the last known price for a given stock ticker.
@@ -57,44 +30,50 @@ def stock_price(stock_ticker: str) -> str:
     print(Fore.YELLOW + str(last_months_closes))
     return str(f"Stock price over the last month for {stock_ticker}: {last_months_closes}")
 
-# Add in a stock info tool 
 @mcp.tool()
-def stock_info(stock_ticker: str) -> str:
-    """This tool returns information about a given stock given it's ticker.
+def recomment_etf(index_fund_ticker):
+    """This tool returns a list of ETFs that are similar (in terms of sector weight distribution) to the index fund ticker provided.
     Args:
-        stock_ticker: a alphanumeric stock ticker
-        Example payload: "IBM"
-
+        index_fund_tickers: ticker symbol for the primary index fund to compare against
     Returns:
-        str:information about the company
-        Example Respnse "Background information for IBM: {'address1': 'One New Orchard Road', 'city': 'Armonk', 'state': 'NY', 'zip': '10504', 'country': 'United States', 'phone': '914 499 1900', 'website': 
-                'https://www.ibm.com', 'industry': 'Information Technology Services',... }" 
-        """
-    dat = yf.Ticker(stock_ticker)
-    
-    return str(f"Background information for {stock_ticker}: {dat.info}")
+        str: a list of ETFs that are similar to the index fund
+    """
 
-# Add in an income statement tool
-@mcp.tool()
-def income_statement(stock_ticker: str) -> str:
-    """This tool returns the quarterly income statement for a given stock ticker.
-    Args:
-        stock_ticker: a alphanumeric stock ticker
-        Example payload: "BOA"
+    #hardcoded list of candidate ETFs (Similar to VTSAX for demo)
+    candidate_etfs = ["VTI","SCHB","ITOT","VOO"]
 
-    Returns:
-        str:quarterly income statement for the company
-        Example Respnse "Income statement for BOA: 
-        Tax Effect Of Unusual Items                           76923472.474289  ...          NaN
-        Tax Rate For Calcs                                            0.11464  ...          NaN
-        Normalized EBITDA                                        4172000000.0  ...          NaN
-        """
+    def get_sector_weights(ticker):
+        """Get the sector weight for a given ticker"""
+        t = yf.Ticker(ticker)
+        try:
+            sector_weights_dict = t.get_funds_data().sector_weightings
+            return sector_weights_dict
+        except Exception as e:
+            print(f"Failed to fetch sector weights for {ticker}:{e}") 
+            return {}
+    
+    #get sector weight dict for index funcd
+    base_vector = get_sector_weights(index_fund_ticker)
+    if not base_vector:
+        print("No sector data available for the index fund")
+        return []
+    
+    sectors = sorted(base_vector.keys())
+    base_array = np.array([base_vector.get(s,0.0) for s in sectors]).reshape(1, -1)
+    
+    results = []
+    for etf in candidate_etfs:
+        etf_vector = get_sector_weights(etf)
+        if not etf_vector:
+            continue
+        etf_array = np.array([etf_vector.get(s,0.0) for s in sectors]).reshape(1,-1)
+        score = cosine_similarity(base_array,etf_array)[0][0]
+        results.append((etf,score))
 
-    dat = yf.Ticker(stock_ticker)
-    
-    
-    return str(f"Background information for {stock_ticker} {dat.quarterly_income_stmt}")
+    results.sort(key = lambda x:x[1], reverse = True)
+    return results[:2] #return top 2 most similar ETFs
 
 # Kick off server if file is run 
 if __name__ == "__main__":
+    print("Starting server...")
     mcp.run(transport="stdio")

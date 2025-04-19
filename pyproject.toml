@@ -10,4 +10,5 @@ dependencies = [
     "mcp[cli]>=1.6.0",
     "smolagents[litellm,mcp]>=1.13.0",
     "yfinance>=0.2.55",
+    "scikit-learn"
 ]
